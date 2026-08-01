@@ -1,0 +1,44 @@
+# 公开审计见证:每 6 小时抓一次 OceanAlt 的公开审计指纹,提交进本仓库历史。
+# 只读公开端点 /api/audit-anchor(无需任何 OceanAlt 凭证),用本仓库自己的 GITHUB_TOKEN 提交(同仓库推送)。
+name: witness
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # 每 6 小时 1 次
+  workflow_dispatch: {}       # 允许手动点 Run workflow 立即记录一次
+
+concurrency:
+  group: witness
+  cancel-in-progress: false
+
+permissions:
+  contents: write             # 提交回本仓库需要写权限
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 抓取公开审计指纹并记录
+        run: |
+          TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          ANCHOR=$(curl -sS -m 30 "https://media.oceanalt.com/api/audit-anchor")
+          FP=$(echo "$ANCHOR" | grep -o '"fingerprint":"[0-9a-f]*"' | head -1 | grep -o '[0-9a-f]\{64\}' || echo "")
+          if [ -z "$FP" ]; then echo "无指纹,跳过"; exit 0; fi
+          mkdir -p witness
+          echo "{\"recordedAt\":\"$TS\",\"runId\":\"${{ github.run_id }}\",\"anchor\":$ANCHOR}" > witness/latest.json
+          # 仅当该指纹未记录过才追加历史(去重,避免刷屏)
+          if ! grep -q "$FP" witness/history.log 2>/dev/null; then
+            echo "$TS  $FP  run:${{ github.run_id }}" >> witness/history.log
+          fi
+          git config user.name "oceanalt-witness"
+          git config user.email "witness@oceanalt.com"
+          git add witness/latest.json witness/history.log
+          if git diff --cached --quiet; then
+            echo "指纹无变化,跳过提交"
+          else
+            git commit -m "witness: 审计指纹 $TS ($FP)"
+            git push
+          fi
